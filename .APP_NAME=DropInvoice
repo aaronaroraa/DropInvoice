@@ -1,0 +1,32 @@
+# FastAPI
+APP_NAME=DropInvoice
+APP_ENV=local
+PUBLIC_BASE_URL=https://your-ngrok-or-host.example.com
+ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+
+# Twilio WhatsApp Business API
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
+TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
+
+# Gemini API
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-2.5-flash
+
+# Supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+
+# Gmail SMTP
+GMAIL_SMTP_HOST=smtp.gmail.com
+GMAIL_SMTP_PORT=587
+GMAIL_USERNAME=your_email@gmail.com
+GMAIL_APP_PASSWORD=your_gmail_app_password
+
+# Celery / Redis
+REDIS_URL=redis://localhost:6379/0
+
+# OCR / ASR
+TESSERACT_CMD=/usr/bin/tesseract
+WHISPER_MODEL=base
+

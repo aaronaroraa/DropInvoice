@@ -1,0 +1,1 @@
+"""DropInvoice test suite."""
