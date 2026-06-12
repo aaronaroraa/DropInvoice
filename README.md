@@ -24,8 +24,7 @@ Over **63 million** MSMEs in India still create invoices by hand. Most don't hav
 
 ## 🎬 Demo
 
-<!-- Replace with actual demo GIF/video after recording -->
-![DropInvoice Demo](https://via.placeholder.com/800x400?text=Demo+GIF+Coming+Soon)
+![DropInvoice Demo](assets/demo.png)
 
 > **Try it:** Send a photo of any handwritten bill to the Twilio Sandbox WhatsApp number.
 
