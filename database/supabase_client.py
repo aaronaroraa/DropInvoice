@@ -55,6 +55,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("dropinvoice.database")
@@ -313,6 +314,47 @@ def get_invoice_history(
         "Fetched %d invoice(s) for %s", len(rows), normalized_phone
     )
     return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Storage operations
+# ---------------------------------------------------------------------------
+
+def upload_invoice_pdf(pdf_path: str | Path, invoice_number: str) -> str:
+    """Upload a generated invoice PDF to Supabase Storage and return its public URL.
+
+    The bucket name defaults to ``invoices`` and must be created in the Supabase
+    dashboard with public read access enabled.
+
+    Args:
+        pdf_path:       Local path to the generated PDF file.
+        invoice_number: Used as the storage object name (e.g. DROPINV-202506-0001).
+
+    Returns:
+        The public HTTPS URL for the uploaded PDF.
+    """
+
+    client = get_supabase_client()
+    bucket = os.getenv("SUPABASE_STORAGE_BUCKET", "invoices")
+    storage_key = f"{invoice_number}.pdf"
+
+    with Path(pdf_path).open("rb") as file_handle:
+        pdf_bytes = file_handle.read()
+
+    try:
+        client.storage.from_(bucket).upload(
+            path=storage_key,
+            file=pdf_bytes,
+            file_options={"content-type": "application/pdf", "upsert": "true"},
+        )
+    except Exception as exc:
+        raise SupabaseClientError(
+            f"Failed to upload PDF {storage_key} to bucket '{bucket}'"
+        ) from exc
+
+    public_url: str = client.storage.from_(bucket).get_public_url(storage_key)
+    logger.info("Uploaded invoice PDF to %s", public_url)
+    return public_url
 
 
 # ---------------------------------------------------------------------------

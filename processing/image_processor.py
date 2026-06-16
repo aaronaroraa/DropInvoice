@@ -43,6 +43,59 @@ def process_image(image_path: str | Path, metadata: dict[str, Any] | None = None
     return cleaned_text
 
 
+def transcribe_image_with_gemini(image_path: str | Path) -> str | None:
+    """Transcribe a bill image to plain text using Gemini Vision.
+
+    Multimodal models read phone photos of receipts far more reliably than
+    local Tesseract OCR. Returns the transcribed text, or None if Gemini is
+    unavailable/misconfigured so the caller can fall back to Tesseract.
+    """
+
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        import google.generativeai as genai
+    except ImportError:
+        logger.info("google-generativeai not installed; using Tesseract OCR")
+        return None
+
+    try:
+        import mimetypes
+
+        genai.configure(api_key=api_key)
+        model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+        model = genai.GenerativeModel(model_name)
+
+        path = Path(image_path)
+        mime_type = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+        image_bytes = path.read_bytes()
+
+        prompt = (
+            "Transcribe this bill, receipt, or invoice image into plain text. "
+            "Preserve every line item on its own line with description, quantity, "
+            "unit, rate, and amount exactly as shown. Include the seller/shop name, "
+            "any GSTIN, and the subtotal/total amounts. "
+            "Output only the transcribed text with no commentary or markdown."
+        )
+
+        response = model.generate_content(
+            [prompt, {"mime_type": mime_type, "data": image_bytes}]
+        )
+        text = (response.text or "").strip()
+        if text:
+            logger.info("Gemini Vision transcribed %s characters from %s", len(text), path)
+            return text
+        return None
+    except Exception:
+        logger.warning(
+            "Gemini Vision transcription failed; falling back to Tesseract OCR",
+            exc_info=True,
+        )
+        return None
+
+
 def configure_tesseract() -> None:
     """Apply an explicit Tesseract binary path when configured."""
 

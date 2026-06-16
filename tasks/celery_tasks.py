@@ -51,28 +51,11 @@ celery_app.conf.update(
 # Main pipeline task
 # ---------------------------------------------------------------------------
 
-@celery_app.task(
-    bind=True,
-    name="dropinvoice.process_invoice",
-    max_retries=2,
-    default_retry_delay=10,
-)
-def process_invoice_task(
-    self: Any,
-    media_path: str,
-    metadata: dict[str, Any],
-) -> dict[str, Any]:
-    """Run the full invoice pipeline asynchronously: process → parse → generate → deliver.
+def run_invoice_pipeline(media_path: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    """Run the full invoice pipeline: extract → parse → enrich → PDF → upload → deliver.
 
-    Args:
-        self:       Bound Celery task instance (for retries).
-        media_path: Absolute path to the downloaded image or audio file.
-        metadata:   Webhook metadata including ``from_number``, ``media_kind``,
-                    ``message_sid``, etc.
-
-    Returns:
-        A result dict containing ``invoice_number``, ``pdf_path``, and
-        delivery status.
+    This is the shared core called by both the Celery task and the synchronous
+    fallback path in the webhook handler.
     """
 
     from_number = metadata.get("from_number", "")
@@ -85,11 +68,8 @@ def process_invoice_task(
     )
 
     try:
-        # Step 1: Extract raw text from image or audio
-        raw_text = _extract_raw_text(media_path, media_kind, metadata)
-
-        # Step 2: Parse raw text into structured invoice JSON
-        invoice_data = _parse_invoice(raw_text, metadata)
+        # Steps 1+2: Turn the media into structured invoice JSON.
+        invoice_data = _extract_and_parse_invoice(media_path, media_kind, metadata)
 
         # Step 3: Enrich with user profile from Supabase
         invoice_data = _enrich_with_user_profile(invoice_data, from_number)
@@ -100,10 +80,13 @@ def process_invoice_task(
         invoice_data["raw_input_type"] = media_kind
         invoice_data["phone_number"] = from_number
 
-        # Step 5: Save invoice record to Supabase
+        # Step 5: Upload PDF to Supabase Storage and attach public URL
+        invoice_data["pdf_url"] = _upload_pdf(pdf_path, invoice_data.get("invoice_number", ""))
+
+        # Step 6: Save invoice record to Supabase
         _save_invoice_record(invoice_data)
 
-        # Step 6: Deliver PDF via WhatsApp and email
+        # Step 7: Deliver PDF via WhatsApp and email
         _deliver_invoice(from_number, pdf_path, invoice_data)
 
         logger.info(
@@ -123,11 +106,6 @@ def process_invoice_task(
         )
         _log_failure(from_number, str(exc), media_kind)
         _send_error_reply(from_number, media_kind, exc)
-
-        # Retry transient errors (network timeouts, etc.)
-        if self.request.retries < self.max_retries:
-            raise self.retry(exc=exc)
-
         return {
             "status": "failed",
             "from_number": from_number,
@@ -135,9 +113,57 @@ def process_invoice_task(
         }
 
 
+@celery_app.task(
+    bind=True,
+    name="dropinvoice.process_invoice",
+    max_retries=2,
+    default_retry_delay=10,
+)
+def process_invoice_task(
+    self: Any,
+    media_path: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Celery wrapper around run_invoice_pipeline with retry support."""
+
+    try:
+        return run_invoice_pipeline(media_path, metadata)
+    except Exception as exc:
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc)
+        return {"status": "failed", "error": str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # Pipeline steps (each wraps an existing module)
 # ---------------------------------------------------------------------------
+
+def _extract_and_parse_invoice(
+    media_path: str,
+    media_kind: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Produce structured invoice JSON from media.
+
+    Primary path for images: a single Gemini Vision call reads the photo
+    (printed, handwritten, regional-language, or rough) directly into the
+    schema. Falls back to the OCR/transcript text path (Gemini-on-text, then
+    regex) when Vision is unavailable or fails.
+    """
+
+    if media_kind == "image":
+        try:
+            from processing.parser import parse_invoice_from_image
+            return parse_invoice_from_image(media_path, metadata)
+        except Exception:
+            logger.warning(
+                "Gemini Vision parse failed; falling back to OCR text path",
+                exc_info=True,
+            )
+
+    raw_text = _extract_raw_text(media_path, media_kind, metadata)
+    return _parse_invoice(raw_text, metadata)
+
 
 def _extract_raw_text(
     media_path: str,
@@ -147,7 +173,16 @@ def _extract_raw_text(
     """Route to image or audio processing based on media kind."""
 
     if media_kind == "image":
-        from processing.image_processor import process_image
+        from processing.image_processor import (
+            process_image,
+            transcribe_image_with_gemini,
+        )
+
+        # Prefer Gemini Vision (handles phone photos of receipts far better than
+        # local Tesseract OCR); fall back to Tesseract if Gemini is unavailable.
+        vision_text = transcribe_image_with_gemini(media_path)
+        if vision_text:
+            return vision_text
         return process_image(media_path, metadata)
 
     if media_kind == "audio":
@@ -211,6 +246,17 @@ def _generate_pdf(invoice_data: dict[str, Any]) -> str:
 
     from invoice.generator import generate_invoice_pdf
     return generate_invoice_pdf(invoice_data)
+
+
+def _upload_pdf(pdf_path: str, invoice_number: str) -> str | None:
+    """Upload the PDF to Supabase Storage and return the public URL (best-effort)."""
+
+    try:
+        from database.supabase_client import upload_invoice_pdf
+        return upload_invoice_pdf(pdf_path, invoice_number)
+    except Exception:
+        logger.warning("PDF upload to Supabase Storage failed; delivery will send text summary", exc_info=True)
+        return None
 
 
 def _save_invoice_record(invoice_data: dict[str, Any]) -> None:

@@ -5,7 +5,10 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-DEFAULT_GST_RATE = 18.0
+from invoice.gst_rates import (
+    DEFAULT_GST_RATE,
+    resolve_item_gst_rate,
+)
 
 
 class GSTCalculationError(Exception):
@@ -13,24 +16,104 @@ class GSTCalculationError(Exception):
 
 
 def calculate_gst(invoice_data: dict[str, Any]) -> dict[str, Any]:
-    """Return invoice data with transaction type, subtotal, tax, and grand total."""
+    """Return invoice data with per-item GST rates, mixed-rate tax, and totals.
+
+    Each item's GST rate is resolved from its HSN code / description / suggested
+    rate via the embedded GST engine, so bills with mixed slabs (e.g. 0% atta +
+    5% spices + 18% soap) are taxed correctly. The aggregate ``tax_breakdown``
+    keeps its CGST/SGST/IGST shape for backward compatibility, and a rate-wise
+    ``rate_summary`` is added for GST-compliant reporting.
+    """
 
     normalized_invoice = deepcopy(invoice_data)
     items = normalized_invoice.get("items")
     if not isinstance(items, list) or not items:
         raise GSTCalculationError("Invoice data must include at least one item.")
 
-    subtotal = get_invoice_subtotal(normalized_invoice)
     transaction_type = determine_transaction_type(normalized_invoice)
-    tax_breakdown = calculate_tax_breakdown(subtotal, transaction_type)
+
+    # Bucket taxable amounts by resolved GST rate, tagging each item with its rate.
+    taxable_by_rate: dict[float, float] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        taxable = get_item_total(item)
+        rate = resolve_item_gst_rate(
+            item.get("hsn_code"),
+            item.get("description"),
+            item.get("gst_rate"),
+        )
+        item["gst_rate"] = rate
+        taxable_by_rate[rate] = taxable_by_rate.get(rate, 0.0) + taxable
+
+    subtotal = round_money(sum(taxable_by_rate.values()))
+    rate_summary, total_cgst, total_sgst, total_igst = _summarize_rates(
+        taxable_by_rate, transaction_type
+    )
+
+    if transaction_type == "inter":
+        tax_breakdown = {
+            "type": "IGST",
+            "cgst": None,
+            "sgst": None,
+            "igst": round_money(total_igst),
+        }
+    else:
+        tax_breakdown = {
+            "type": "CGST+SGST",
+            "cgst": round_money(total_cgst),
+            "sgst": round_money(total_sgst),
+            "igst": None,
+        }
+
+    total_tax = round_money(total_cgst + total_sgst + total_igst)
+    representative_rate = (
+        max(taxable_by_rate, key=lambda r: taxable_by_rate[r])
+        if taxable_by_rate
+        else DEFAULT_GST_RATE
+    )
 
     normalized_invoice["transaction_type"] = transaction_type
-    normalized_invoice["subtotal"] = round_money(subtotal)
-    normalized_invoice["tax_rate"] = int(DEFAULT_GST_RATE)
+    normalized_invoice["subtotal"] = subtotal
+    normalized_invoice["tax_rate"] = int(representative_rate)
     normalized_invoice["tax_breakdown"] = tax_breakdown
-    normalized_invoice["grand_total"] = round_money(subtotal + tax_breakdown_total(tax_breakdown))
+    normalized_invoice["rate_summary"] = rate_summary
+    normalized_invoice["grand_total"] = round_money(subtotal + total_tax)
 
     return normalized_invoice
+
+
+def _summarize_rates(
+    taxable_by_rate: dict[float, float],
+    transaction_type: str,
+) -> tuple[list[dict[str, Any]], float, float, float]:
+    """Build a rate-wise GST summary and aggregate CGST/SGST/IGST totals."""
+
+    normalized_type = normalize_transaction_type(transaction_type)
+    rate_summary: list[dict[str, Any]] = []
+    total_cgst = total_sgst = total_igst = 0.0
+
+    for rate in sorted(taxable_by_rate):
+        taxable = round_money(taxable_by_rate[rate])
+        tax = round_money(taxable * rate / 100)
+
+        if normalized_type == "inter":
+            rate_summary.append({
+                "rate": rate, "taxable": taxable,
+                "cgst": None, "sgst": None, "igst": tax, "total_tax": tax,
+            })
+            total_igst += tax
+        else:
+            half = round_money(tax / 2)
+            rate_summary.append({
+                "rate": rate, "taxable": taxable,
+                "cgst": half, "sgst": half, "igst": None,
+                "total_tax": round_money(half * 2),
+            })
+            total_cgst += half
+            total_sgst += half
+
+    return rate_summary, total_cgst, total_sgst, total_igst
 
 
 def calculate_gst_breakdown(invoice_data: dict[str, Any]) -> dict[str, Any]:

@@ -193,15 +193,18 @@ def route_media_to_pipeline(media: DownloadedMedia, incoming: IncomingMessage) -
     if enqueue_celery_task(media, metadata):
         return
 
-    if media.kind == MediaKind.IMAGE:
-        route_image_to_pipeline(media.path, metadata)
-        return
+    # Synchronous fallback: run the full pipeline in-process
+    run_pipeline_sync(media.path, metadata)
 
-    if media.kind == MediaKind.AUDIO:
-        route_audio_to_pipeline(media.path, metadata)
-        return
 
-    raise ValueError(f"Unsupported media kind: {media.kind}")
+def run_pipeline_sync(media_path: str, metadata: dict[str, Any]) -> None:
+    """Run the full invoice pipeline synchronously when Celery is unavailable."""
+
+    try:
+        from tasks.celery_tasks import run_invoice_pipeline
+        run_invoice_pipeline(media_path, metadata)
+    except Exception:
+        logger.exception("Sync pipeline failed for %s", metadata.get("message_sid"))
 
 
 def build_processing_metadata(
@@ -223,40 +226,31 @@ def build_processing_metadata(
 
 
 def enqueue_celery_task(media: DownloadedMedia, metadata: dict[str, Any]) -> bool:
-    """Queue the full invoice pipeline when the Celery task module exists."""
+    """Queue the full invoice pipeline when Celery + Redis are available.
+
+    Celery is opt-in: set USE_CELERY=true (and run a worker) to enable the
+    async queue. By default the pipeline runs synchronously in-process, which
+    is simpler and more robust for prototype/single-host deployments.
+    """
+
+    if os.getenv("USE_CELERY", "false").strip().lower() not in {"1", "true", "yes"}:
+        logger.info("USE_CELERY not enabled — running pipeline synchronously")
+        return False
 
     try:
         from tasks.celery_tasks import process_invoice_task
     except ModuleNotFoundError:
         return False
 
-    process_invoice_task.delay(media.path, metadata)
-    logger.info("Queued Celery invoice task for %s", metadata["message_sid"])
-    return True
-
-
-def route_image_to_pipeline(media_path: str, metadata: dict[str, Any]) -> None:
-    """Route an image attachment to the OCR pipeline when available."""
-
     try:
-        from processing.image_processor import process_image
-    except ModuleNotFoundError:
-        logger.warning("Image pipeline is not implemented yet for %s", media_path)
-        return
+        process_invoice_task.delay(media.path, metadata)
+        logger.info("Queued Celery invoice task for %s", metadata["message_sid"])
+        return True
+    except Exception:
+        logger.info("Celery/Redis unavailable — falling back to sync pipeline")
+        return False
 
-    process_image(media_path, metadata)
 
-
-def route_audio_to_pipeline(media_path: str, metadata: dict[str, Any]) -> None:
-    """Route an audio attachment to the Whisper transcription pipeline when available."""
-
-    try:
-        from processing.audio_processor import process_audio
-    except ModuleNotFoundError:
-        logger.warning("Audio pipeline is not implemented yet for %s", media_path)
-        return
-
-    process_audio(media_path, metadata)
 
 
 def twiml_response(message: str) -> Response:

@@ -28,6 +28,10 @@ def generate_invoice_pdf(
 
     reportlab = load_reportlab()
     enriched_invoice = prepare_invoice_data(invoice_data, output_dir)
+    # Propagate generated metadata back to the caller's dict so the rest of the
+    # pipeline (PDF upload, DB record, WhatsApp reply) sees the invoice number,
+    # date, and recalculated GST totals shown on the PDF.
+    invoice_data.update(enriched_invoice)
     pdf_path = build_pdf_path(enriched_invoice["invoice_number"], output_dir)
     document = reportlab["SimpleDocTemplate"](
         str(pdf_path),
