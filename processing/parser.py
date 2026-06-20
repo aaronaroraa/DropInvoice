@@ -1,4 +1,4 @@
-"""Claude and regex-based invoice text parser for DropInvoice."""
+"""Gemini and regex-based invoice text parser for DropInvoice."""
 
 from __future__ import annotations
 
@@ -291,7 +291,7 @@ def load_json_object(response_text: str) -> dict[str, Any]:
 
 
 def parse_with_regex(raw_text: str) -> dict[str, Any]:
-    """Fallback parser for extracting invoice data without Claude."""
+    """Fallback parser for extracting invoice data without Gemini."""
 
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     gstins = extract_gstins(raw_text)

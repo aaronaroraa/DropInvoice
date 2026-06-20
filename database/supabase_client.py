@@ -252,7 +252,7 @@ def log_pipeline_failure(
     """Log a failed invoice processing attempt to Supabase.
 
     Creates a partial invoice record with ``status='failed'`` so that
-    the operations team can triage OCR/ASR/Claude failures.
+    the operations team can triage OCR/ASR/Gemini failures.
 
     Args:
         phone_number:   The user's phone number.

@@ -67,7 +67,7 @@
 #
 # "For kirana owners who can't write English or Hindi clearly,
 #  voice notes are a game-changer. Whisper handles the transcription,
-#  Claude structures the data."
+#  Gemini structures the data."
 #
 # -------------------------------------------------------------------
 # MINUTE 2:30–3:30 — ARCHITECTURE WALKTHROUGH
@@ -88,9 +88,9 @@
 #     For voice: pydub converts to WAV, Whisper runs locally."
 #
 # 3. AI EXTRACTION
-#    "The raw text goes to Claude with a carefully engineered system
-#     prompt. Claude returns structured JSON — line items, GSTINs,
-#     prices. If Claude fails, a regex fallback handles it."
+#    "The bill image goes to Gemini Vision with a carefully engineered
+#     system prompt. Gemini returns structured JSON — line items, GSTINs,
+#     prices. If Gemini fails, a regex fallback handles it."
 #
 # 4. GST CALCULATION
 #    "The calculator checks seller and buyer GSTIN state codes.
@@ -121,7 +121,7 @@
 #
 # B) ERROR RESILIENCE
 #    "If the image is unreadable, we tell the user to retake it.
-#     If Claude fails, we fall back to regex extraction.
+#     If Gemini fails, we fall back to regex extraction.
 #     Every failure is logged to Supabase for debugging.
 #     The user always gets a response — never silence."
 #
@@ -183,10 +183,11 @@
 #     For a product targeting ₹50/day kirana owners, cost matters.
 #     Cloud Vision is a great upgrade path for accuracy."
 #
-# Q: "Why Claude and not GPT-4?"
-# A: "Claude's structured output reliability is excellent for JSON
-#     extraction. The system prompt + schema approach produces
-#     consistent, parseable results. GPT-4 would work too."
+# Q: "Why Gemini and not GPT-4?"
+# A: "Gemini's multimodal reliability is excellent — it reads the bill
+#     image directly and returns structured JSON. The system prompt +
+#     schema approach produces consistent, parseable results. GPT-4
+#     would work too."
 #
 # Q: "How do you handle scale?"
 # A: "Celery workers scale horizontally. Each worker handles one
@@ -196,5 +197,5 @@
 # Q: "What's the biggest engineering challenge?"
 # A: "Handling the messiness of real-world input. Handwritten bills
 #     have spelling errors, inconsistent formatting, and blurry photos.
-#     The Claude prompt engineering + regex fallback combo handles
+#     The Gemini prompt engineering + regex fallback combo handles
 #     ~90% of cases. The remaining 10% is logged for improvement."
