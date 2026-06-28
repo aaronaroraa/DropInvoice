@@ -147,7 +147,7 @@ def validate_salary_data(data: dict[str, Any]) -> dict[str, Any]:
     if total_deductions is None or total_deductions < 0:
         total_deductions = round(sum(item["amount"] for item in deductions), 2)
     net_pay = _money(data.get("net_pay"))
-    if net_pay is None or net_pay <= 0:
+    if net_pay is None:
         net_pay = round(gross - total_deductions, 2)
 
     return {

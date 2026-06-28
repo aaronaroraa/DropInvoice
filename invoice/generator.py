@@ -356,11 +356,16 @@ def build_totals_section(
         ["Tax Type", tax_breakdown["type"]],
     ]
 
+    # Use the actual computed rate so mixed-rate and non-18% bills show correct labels.
+    rate = to_float(invoice_data.get("tax_rate")) or 0.0
+    half = rate / 2
+    rate_label = f"{rate:g}%"
+    half_label = f"{half:g}%"
     if tax_breakdown["type"] == "IGST":
-        rows.append(["IGST 18%", format_money(tax_breakdown.get("igst"))])
+        rows.append([f"IGST {rate_label}", format_money(tax_breakdown.get("igst"))])
     else:
-        rows.append(["CGST 9%", format_money(tax_breakdown.get("cgst"))])
-        rows.append(["SGST 9%", format_money(tax_breakdown.get("sgst"))])
+        rows.append([f"CGST {half_label}", format_money(tax_breakdown.get("cgst"))])
+        rows.append([f"SGST {half_label}", format_money(tax_breakdown.get("sgst"))])
 
     rows.extend(
         [

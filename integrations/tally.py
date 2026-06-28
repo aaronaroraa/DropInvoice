@@ -155,13 +155,15 @@ def _tax_ledger_entries(tax_breakdown: dict[str, Any]) -> list[str]:
     sgst = _num(tax_breakdown.get("sgst"))
     igst = _num(tax_breakdown.get("igst"))
 
-    if igst:
+    # Use explicit None checks so a genuine 0.0 tax entry is still emitted.
+    # Tally needs balanced ledger entries even for exempt/0% transactions.
+    if tax_breakdown.get("igst") is not None:
         ledger = os.getenv("TALLY_IGST_LEDGER", "Output IGST").strip() or "Output IGST"
         entries.append(_ledger_entry(ledger, is_deemed_positive=False, amount=igst))
-    if cgst:
+    if tax_breakdown.get("cgst") is not None:
         ledger = os.getenv("TALLY_CGST_LEDGER", "Output CGST").strip() or "Output CGST"
         entries.append(_ledger_entry(ledger, is_deemed_positive=False, amount=cgst))
-    if sgst:
+    if tax_breakdown.get("sgst") is not None:
         ledger = os.getenv("TALLY_SGST_LEDGER", "Output SGST").strip() or "Output SGST"
         entries.append(_ledger_entry(ledger, is_deemed_positive=False, amount=sgst))
 
