@@ -1,0 +1,43 @@
+# Render Blueprint for DropInvoice.
+# In Render: New > Blueprint > connect this repo. Render reads this file, creates
+# the web service, and prompts you for the secret values below (sync: false).
+services:
+  - type: web
+    name: dropinvoice
+    runtime: python
+    plan: free            # upgrade to "starter" ($7/mo) to avoid free-tier sleep
+    buildCommand: pip install -r requirements-deploy.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.10.14"
+      - key: APP_NAME
+        value: DropInvoice
+      - key: APP_ENV
+        value: production
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: MENU_MODE
+        value: always
+      # PUBLIC_BASE_URL must equal this service's public URL once it's live,
+      # e.g. https://dropinvoice.onrender.com (set it after the first deploy).
+      - key: PUBLIC_BASE_URL
+        sync: false
+      # Secrets — enter these in the Render dashboard (never commit them):
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_WHATSAPP_FROM
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: GMAIL_USERNAME
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false

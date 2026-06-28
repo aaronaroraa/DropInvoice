@@ -1,0 +1,18 @@
+# Slim requirements for cloud deployment (free tier friendly).
+# Image understanding uses Gemini Vision (API), so the heavy local ML stack
+# (openai-whisper/torch, opencv, tesseract, pydub) is intentionally excluded.
+# Those remain in requirements.txt for local full-feature use.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+python-dotenv==1.0.1
+pydantic-settings==2.7.1
+twilio==9.4.1
+requests==2.32.3
+google-generativeai==0.8.3
+supabase==2.11.0
+celery==5.4.0
+redis==5.2.1
+Pillow==11.0.0
+reportlab==4.2.5
+httpx==0.27.2
