@@ -7,6 +7,7 @@ from typing import Any
 
 from invoice.gst_rates import (
     DEFAULT_GST_RATE,
+    is_non_taxable,
     resolve_item_gst_rate,
 )
 
@@ -32,19 +33,37 @@ def calculate_gst(invoice_data: dict[str, Any]) -> dict[str, Any]:
 
     transaction_type = determine_transaction_type(normalized_invoice)
 
+    # Bill-level switch: when the bill is explicitly a non-GST bill, nothing is taxed.
+    gst_applicable = _coerce_bool(normalized_invoice.get("gst_applicable"), default=True)
+    normalized_invoice["gst_applicable"] = gst_applicable
+
     # Bucket taxable amounts by resolved GST rate, tagging each item with its rate.
     taxable_by_rate: dict[float, float] = {}
     for item in items:
         if not isinstance(item, dict):
             continue
-        taxable = get_item_total(item)
-        rate = resolve_item_gst_rate(
-            item.get("hsn_code"),
-            item.get("description"),
-            item.get("gst_rate"),
+        amount = get_item_total(item)
+        description = item.get("description")
+
+        # A line is "personal" (separate table, no GST) when the model flags it
+        # taxable=false OR it matches a person name / personal-payment keyword.
+        # This catches names even on the regex path where no flag was set.
+        personal = (not _coerce_bool(item.get("taxable"), default=True)) or is_non_taxable(
+            description
         )
+
+        if personal or not gst_applicable:
+            # Personal lines and explicit non-GST bills carry no GST. Non-GST-bill
+            # goods stay taxable=True so they remain in the goods table.
+            rate = 0.0
+        else:
+            rate = resolve_item_gst_rate(
+                item.get("hsn_code"), description, item.get("gst_rate")
+            )
+
         item["gst_rate"] = rate
-        taxable_by_rate[rate] = taxable_by_rate.get(rate, 0.0) + taxable
+        item["taxable"] = not personal
+        taxable_by_rate[rate] = taxable_by_rate.get(rate, 0.0) + amount
 
     subtotal = round_money(sum(taxable_by_rate.values()))
     rate_summary, total_cgst, total_sgst, total_igst = _summarize_rates(
@@ -226,6 +245,28 @@ def tax_breakdown_total(tax_breakdown: dict[str, Any]) -> float:
         + (to_float(tax_breakdown.get("sgst")) or 0.0)
         + (to_float(tax_breakdown.get("igst")) or 0.0)
     )
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    """Interpret booleans, strings, and numbers as a boolean flag.
+
+    Accepts JSON booleans as well as strings like "false"/"no"/"0" so flags from
+    the model or upstream data resolve consistently. Returns ``default`` for None.
+    """
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return value != 0
+
+    text = str(value).strip().lower()
+    if text in {"false", "no", "n", "0", "off", "non-gst", "nogst", "none"}:
+        return False
+    if text in {"true", "yes", "y", "1", "on", "gst"}:
+        return True
+    return default
 
 
 def to_float(value: Any) -> float | None:

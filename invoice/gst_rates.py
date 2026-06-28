@@ -26,6 +26,23 @@ VALID_GST_SLABS: tuple[float, ...] = (0.0, 5.0, 12.0, 18.0, 28.0)
 # Fallback when nothing else resolves — 18% is the most common standard rate.
 DEFAULT_GST_RATE: float = 18.0
 
+# Known person/individual names whose transactions are NOT taxable (labour,
+# salary, or personal payments — not a supply of goods). Matched case-insensitively
+# as whole words. Extend this list as needed.
+PERSON_NAMES: frozenset[str] = frozenset({
+    "anita", "javed", "pankaj", "payal", "sushant",
+})
+
+# Words that mark a line as a personal/financial transaction rather than a sale of
+# goods — these are NOT taxable, so no GST applies. Includes common Hinglish terms.
+NON_TAXABLE_KEYWORDS: frozenset[str] = frozenset({
+    "payment", "paid", "received", "salary", "wages", "wage", "labour", "labor",
+    "majdoori", "mazdoori", "advance", "loan", "udhaar", "udhar", "rent", "kiraya",
+    "deposit", "transfer", "withdraw", "withdrawal", "cash", "borrow", "lend",
+    "given", "gave", "personal", "gift", "donation", "refund", "fees", "fee",
+    "commission", "tip", "bonus", "reimbursement", "settlement", "emi",
+})
+
 
 # ---------------------------------------------------------------------------
 # HSN-code → rate rules
@@ -93,39 +110,72 @@ HSN_PREFIX_RATES: dict[str, float] = {
 # ---------------------------------------------------------------------------
 # Description-keyword → rate rules (for handwritten bills with no HSN code)
 # ---------------------------------------------------------------------------
-# Matched case-insensitively against the item description. Includes common
+# Flat keyword -> rate map, matched case-insensitively against the item
+# description. When several keywords match, the LONGEST (most specific) wins —
+# so "Mong Dal Papad" resolves via "papad" (5%), not "dal" (0%). Includes common
 # Hinglish terms so rough Indian bills resolve sensibly.
-KEYWORD_RATES: tuple[tuple[float, tuple[str, ...]], ...] = (
-    (0.0, (
-        "fresh vegetable", "sabzi", "subzi", "vegetable", "fruit", "milk",
-        "doodh", "dahi", "curd", "egg", "anda", "bread", "salt", "namak",
-        "atta", "aata", "wheat flour", "besan flour", "rice", "chawal",
-        "dal", "pulse", "book", "newspaper", "jaggery", "gud",
-    )),
-    (5.0, (
-        "sugar", "cheeni", "chini", "tea", "chai", "coffee", "oil", "tel",
-        "ghee substitute", "spice", "masala", "haldi", "mirch", "dhaniya",
-        "jeera", "papad", "paneer", "skimmed milk", "fertilizer", "coal",
-        "footwear", "chappal", "slipper",
-    )),
-    (12.0, (
-        "ghee", "butter", "makhan", "cheese", "almond", "badam", "walnut",
-        "akhroot", "cashew", "kaju", "dry fruit", "namkeen", "juice",
-        "frozen", "umbrella", "sewing", "mobile",
-    )),
-    (18.0, (
-        "soap", "sabun", "shampoo", "toothpaste", "detergent", "surf",
-        "hair oil", "biscuit", "cake", "pasta", "noodle", "maggi", "sauce",
-        "ketchup", "ice cream", "chocolate", "shoe", "battery", "charger",
-        "electronic", "printer", "camera", "stationery", "pen",
-    )),
-    (28.0, (
-        "ac ", "air conditioner", "refrigerator", "fridge", "television",
-        "cement", "car", "bike", "motorcycle", "tobacco", "cigarette",
-        "paan masala", "aerated", "cold drink", "soft drink", "perfume",
-        "paint", "luxury",
-    )),
-)
+KEYWORD_RATES: dict[str, float] = {
+    # 0% — fresh produce, unbranded staples, basic necessities
+    "fresh vegetable": 0.0, "vegetable": 0.0, "sabzi": 0.0, "subzi": 0.0,
+    "fresh fruit": 0.0, "fruit": 0.0, "milk": 0.0, "doodh": 0.0, "dahi": 0.0,
+    "curd": 0.0, "egg": 0.0, "anda": 0.0, "bread": 0.0, "salt": 0.0, "namak": 0.0,
+    "atta": 0.0, "aata": 0.0, "wheat flour": 0.0, "rice": 0.0, "chawal": 0.0,
+    "dal": 0.0, "pulse": 0.0, "lentil": 0.0, "book": 0.0, "newspaper": 0.0,
+    "jaggery": 0.0, "gud": 0.0, "gur": 0.0, "besan": 0.0, "maida": 0.0,
+    "sooji": 0.0, "rava": 0.0, "poha": 0.0, "kumkum": 0.0, "bindi": 0.0,
+    # 5% — packaged staples, edible oil, spices, tea/coffee, footwear, medicines
+    "sugar": 5.0, "cheeni": 5.0, "chini": 5.0, "tea": 5.0, "chai": 5.0,
+    "coffee": 5.0, "edible oil": 5.0, "cooking oil": 5.0, "oil": 5.0, "tel": 5.0,
+    "spice": 5.0, "masala": 5.0, "haldi": 5.0, "turmeric": 5.0, "mirch": 5.0,
+    "chilli": 5.0, "dhaniya": 5.0, "coriander": 5.0, "jeera": 5.0, "cumin": 5.0,
+    "papad": 5.0, "paneer": 5.0, "fertilizer": 5.0, "khaad": 5.0, "coal": 5.0,
+    "footwear": 5.0, "chappal": 5.0, "slipper": 5.0, "sandal": 5.0,
+    "medicine": 5.0, "dawai": 5.0, "tablet": 5.0, "syrup": 5.0, "agarbatti": 5.0,
+    "incense": 5.0, "matchbox": 5.0, "kerosene": 5.0,
+    # 12% — dairy fats, dry fruits, processed/packaged food, mobiles
+    "ghee": 12.0, "butter": 12.0, "makhan": 12.0, "cheese": 12.0,
+    "almond": 12.0, "badam": 12.0, "walnut": 12.0, "akhroot": 12.0,
+    "cashew": 12.0, "kaju": 12.0, "raisin": 12.0, "kishmish": 12.0,
+    "dry fruit": 12.0, "namkeen": 12.0, "juice": 12.0, "frozen": 12.0,
+    "umbrella": 12.0, "sewing machine": 12.0, "mobile": 12.0, "feeding bottle": 12.0,
+    "candle": 12.0, "spectacle": 12.0, "tooth powder": 12.0,
+    # 18% — toiletries, packaged snacks, electronics, stationery, services
+    "soap": 18.0, "sabun": 18.0, "shampoo": 18.0, "toothpaste": 18.0,
+    "detergent": 18.0, "surf": 18.0, "hair oil": 18.0, "biscuit": 18.0,
+    "cake": 18.0, "pasta": 18.0, "noodle": 18.0, "maggi": 18.0, "sauce": 18.0,
+    "ketchup": 18.0, "jam": 18.0, "ice cream": 18.0, "chocolate": 18.0,
+    "shoe": 18.0, "battery": 18.0, "charger": 18.0, "cable": 18.0, "bulb": 18.0,
+    "led": 18.0, "fan": 18.0, "electronic": 18.0, "printer": 18.0, "camera": 18.0,
+    "stationery": 18.0, "pen": 18.0, "notebook": 18.0, "register": 18.0,
+    "shirt": 18.0, "trouser": 18.0, "utensil": 18.0, "steel": 18.0, "plastic": 18.0,
+    "pipe": 18.0, "wire": 18.0, "hardware": 18.0,
+    # 28% — large appliances, construction, vehicles, sin/luxury goods
+    "air conditioner": 28.0, "refrigerator": 28.0, "fridge": 28.0,
+    "television": 28.0, "cement": 28.0, "car": 28.0, "bike": 28.0,
+    "motorcycle": 28.0, "scooter": 28.0, "tobacco": 28.0, "cigarette": 28.0,
+    "paan masala": 28.0, "gutkha": 28.0, "aerated": 28.0, "cold drink": 28.0,
+    "soft drink": 28.0, "soda": 28.0, "perfume": 28.0, "paint": 28.0,
+    "marble": 28.0, "tile": 28.0, "washing machine": 28.0, "dishwasher": 28.0,
+}
+
+
+def is_non_taxable(description: Any) -> bool:
+    """Return True when a line is a personal/financial transaction, not a good.
+
+    Personal payments (labour, salary, loans, rent, money to/from a named person)
+    are not a taxable supply, so no GST applies. Matches the known PERSON_NAMES
+    and NON_TAXABLE_KEYWORDS as whole words, case-insensitively.
+    """
+
+    words = re.findall(r"[a-z]+", str(description or "").lower())
+    return any(word in PERSON_NAMES or word in NON_TAXABLE_KEYWORDS for word in words)
+
+
+# Backwards-compatible alias.
+def is_person_transaction(description: Any) -> bool:
+    """Deprecated: use is_non_taxable. Kept for compatibility."""
+
+    return is_non_taxable(description)
 
 
 def clamp_to_slab(rate: Any) -> float:
@@ -165,15 +215,19 @@ def rate_from_hsn(hsn_code: Any) -> float | None:
 
 
 def rate_from_description(description: Any) -> float | None:
-    """Resolve a GST rate from item description keywords, or None."""
+    """Resolve a GST rate from item description keywords, or None.
 
-    text = f" {str(description or '').lower()} "
-    for rate, keywords in KEYWORD_RATES:
-        for keyword in keywords:
-            if keyword in text:
-                return rate
+    When several keywords match, the longest (most specific) one wins so that,
+    e.g., "papad" beats "dal" in "Mong Dal Papad".
+    """
 
-    return None
+    text = str(description or "").lower()
+    matches = [keyword for keyword in KEYWORD_RATES if keyword in text]
+    if not matches:
+        return None
+
+    best = max(matches, key=len)
+    return KEYWORD_RATES[best]
 
 
 def resolve_item_gst_rate(
@@ -184,14 +238,24 @@ def resolve_item_gst_rate(
     """Return a valid GST slab for an item — never raises.
 
     Resolution order (most authoritative first):
-      1. A rate suggested by the vision model, if it is a valid slab.
-      2. The item's HSN code mapped to a known rate.
+      0. Personal/financial transactions -> 0 (no GST).
+      1. A real HSN code printed on the bill, mapped to a known rate.
+      2. A rate suggested by the model, if it is a valid slab.
       3. The item description matched against category keywords.
       4. The default standard rate (18%).
     The result is always clamped to a legal slab.
     """
 
-    # 1. Trust an explicit suggestion only when it is already a legal slab.
+    # 0. Personal/financial transactions are never taxed — overrides everything.
+    if is_non_taxable(description):
+        return 0.0
+
+    # 1. A real HSN code on the bill is authoritative (generic "9999" maps to None).
+    hsn_rate = rate_from_hsn(hsn_code)
+    if hsn_rate is not None:
+        return hsn_rate
+
+    # 2. Trust the model's suggestion when it is already a legal slab.
     try:
         if suggested_rate is not None:
             suggested = float(suggested_rate)
@@ -200,12 +264,7 @@ def resolve_item_gst_rate(
     except (TypeError, ValueError):
         pass
 
-    # 2. HSN code lookup.
-    hsn_rate = rate_from_hsn(hsn_code)
-    if hsn_rate is not None:
-        return hsn_rate
-
-    # 3. Description keyword lookup.
+    # 3. Description keyword lookup (longest, most specific match wins).
     keyword_rate = rate_from_description(description)
     if keyword_rate is not None:
         return keyword_rate

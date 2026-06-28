@@ -13,3 +13,4 @@ tmp/
 uploads/
 invoices/
 
+.DS_Store

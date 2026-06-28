@@ -24,20 +24,46 @@ MONEY_PATTERN = re.compile(r"(?:rs\.?|inr|\u20b9)?\s*(\d+(?:\.\d{1,2})?)", re.I)
 ITEM_SKIP_PATTERN = re.compile(r"\b(?:gstin|subtotal|total|grand|cgst|sgst|igst|tax|invoice)\b", re.I)
 
 SYSTEM_PROMPT = """
-You extract GST invoice data for DropInvoice from OCR text or voice transcripts.
+You extract GST invoice data for DropInvoice from OCR text, voice transcripts, or
+a customer's typed message. You ALWAYS succeed: whatever the input, return exactly
+one valid JSON object with the keys below and at least one item — never refuse,
+never ask, never return empty or commentary. If the text is unclear or has no
+clear items, still return the schema with one item ("Unspecified item", quantity
+1, unit_price 0, total 0) and explain in "notes". Never invent precise prices you
+cannot see — use 0 and a note instead.
+
 Return only one valid JSON object with exactly these keys:
 seller_name, seller_gstin, buyer_name, buyer_gstin, transaction_type, items,
-subtotal, tax_rate, tax_breakdown, grand_total, notes.
+subtotal, tax_rate, tax_breakdown, grand_total, notes, gst_applicable.
 
 Rules:
 - transaction_type must be "intra" or "inter".
 - items must be a list of objects with description, hsn_code, quantity, unit,
-  unit_price, total.
+  unit_price, total, gst_rate, taxable.
 - Use HSN code "9999" when no HSN code is visible.
 - Use tax_rate 18.
 - Intra-state tax_breakdown is {"type":"CGST+SGST","cgst":x,"sgst":x,"igst":null}.
 - Inter-state tax_breakdown is {"type":"IGST","cgst":null,"sgst":null,"igst":x}.
 - If GSTIN, buyer, seller, or notes are not present, use null where allowed.
+- Expand Indian numeric shorthand: "1k"=1000, "1.5k"=1500, "1L"/"1 lakh"=100000,
+  "2L"=200000, "1cr"/"1 crore"=10000000.
+- If only a total amount is given with no item breakup, create ONE item
+  "Goods/Services" with that amount as unit_price and total.
+- If item names are given without prices, list them with unit_price 0 and total 0
+  and note that prices were missing. Always return at least one item.
+- "advance", "balance", "due", "paid", "old balance", deposits and personal
+  payments are NOT taxable — gst_rate 0, keep the label.
+- Add a "gst_rate" to each item: 0, 5, 12, 18, or 28 (the correct Indian GST rate
+  for that good; default 18 if unsure).
+- Add "taxable" (true/false) to each item. A line is NON-taxable (taxable false,
+  gst_rate 0) whenever it is NOT a sale of goods: this includes ANY human name
+  (any person, not a fixed list) and ANY personal/financial payment (labour,
+  salary, wages, advance, loan, udhaar, rent, deposit, cash given/received,
+  commission, refund, gift, fees, EMI). Keep the original label/name. Apply GST
+  only to goods/food/products (taxable true).
+- Add top-level "gst_applicable" (true/false). Set it false ONLY if the message
+  asks for a non-GST bill ("no GST", "without GST", "cash bill", "kaccha bill",
+  "bina GST", etc.) — then the whole bill has no GST. Otherwise true.
 - Do not include markdown, commentary, or extra keys.
 """.strip()
 
@@ -47,6 +73,20 @@ You are DropInvoice's expert billing assistant for India. You are given a PHOTO
 of a bill, receipt, invoice, or even a rough handwritten note, and you must turn
 it into one clean, structured GST invoice. You are extremely good at reading
 messy, real-world Indian bills.
+
+========================  ABSOLUTE GUARANTEE (NEVER FAIL)  ========================
+You MUST ALWAYS return exactly one valid JSON object that matches the schema
+below, no matter what the input is. There is no input you cannot handle:
+- NEVER refuse, apologize, ask a question, or return an explanation/empty output.
+- ALWAYS return at least one item in "items".
+- If the image is blank, irrelevant, unreadable, or has no clear bill, still
+  return the schema: put one item with description "Unspecified item", quantity 1,
+  unit_price 0, total 0, and explain the situation in "notes".
+- If you can read SOME of it, capture everything you can and note what you could
+  not read in "notes" — partial success is still success.
+- Whatever happens, the output must be parseable JSON with every required key
+  present and valid. This guarantee overrides everything except: never invent
+  precise prices/GSTINs you cannot see (use 0 and a note instead of guessing).
 
 ========================  INPUTS YOU MUST HANDLE  ========================
 Assume the worst-quality input and still do your best. You will see all of:
@@ -69,6 +109,9 @@ Assume the worst-quality input and still do your best. You will see all of:
 - Fix obvious OCR-style confusions in numbers (O/0, l/1, S/5) ONLY when context
   makes it certain.
 - Recognise Indian number formats: "1,300.00", "1300/-", "Rs 1300", "₹1300".
+- Expand Indian numeric shorthand: "1k" = 1000, "1.5k" = 1500, "1L" or "1 lakh"
+  = 100000, "2L" = 200000, "1cr" or "1 crore" = 10000000. (A lowercase "l" next
+  to a unit like "5l oil" means litres, not lakhs.)
 - Treat "MRP", "Rate", "Price", "Amt", "Total", "Qty", "Nos", "Pcs", "Kg",
   "Gm", "Ltr", "Pkt", "Dozen", "HSN", "GST", "CGST", "SGST", "IGST" correctly.
 
@@ -94,6 +137,20 @@ using your knowledge of GST and the HSN code when visible. It MUST be one of:
 - 28%: AC, refrigerator, large TV, cement, automobiles, tobacco, aerated drinks,
   paint, perfume, luxury items.
 A single bill can mix rates — give each item its own correct rate.
+
+PERSONAL / NON-TAXABLE TRANSACTIONS — NO GST (set "taxable": false):
+A line is NON-TAXABLE whenever it is NOT a sale of goods/products. This applies to
+ANY of these — not a fixed list of names:
+- ANY human name at all (any person — e.g. Anita, Ramesh, Mr. Khan, "to Sita",
+  any first/last name), treated as a payment to/from that individual.
+- ANY personal or financial transaction: labour, salary, wages, advance, loan,
+  udhaar, rent, kiraya, deposit, cash given/received, commission, refund, gift,
+  EMI, fees, donation, etc.
+For every such line set "taxable": false and gst_rate 0, and KEEP THE ORIGINAL
+LABEL (the person's name or the payment text, exactly as written). Apply GST only
+to actual goods, food, and products ("taxable": true). When a line could be a
+name OR a product and it clearly reads as a personal name, treat it as a person
+(taxable false).
 
 ========================  INFERENCE RULES (DO NOT FABRICATE)  ========================
 - NEVER invent prices, GSTINs, HSN codes, or items that are not visible.
@@ -124,13 +181,42 @@ A single bill can mix rates — give each item its own correct rate.
   where y = subtotal * rate/100.
 - grand_total = subtotal + total tax.
 
+========================  NON-GST BILL REQUEST (gst_applicable)  ========================
+The customer can ask for a bill WITHOUT GST. If anywhere on the bill, note, or
+message there is an instruction like "no GST", "without GST", "non-GST", "GST
+free", "cash bill", "kaccha bill", "bina GST", "GST nahi", or similar, set the
+top-level "gst_applicable" to false — then the ENTIRE bill is produced with no GST
+on any line. Otherwise set "gst_applicable" to true (a normal GST bill). Individual
+person/personal lines are still non-taxable even when gst_applicable is true.
+
+========================  EDGE CASES — ALWAYS SUCCEED  ========================
+Handle every situation gracefully:
+- Only a grand total visible (no line items): create one item "Goods/Services"
+  with that amount, and back-derive subtotal from any visible tax.
+- Only item names, no prices: list the items with unit_price 0, total 0, and note
+  that prices were not legible.
+- Discounts / "less" / round-off: subtract them so totals reconcile; mention in notes.
+- "Advance", "balance", "due", "paid", "old balance": these are NOT taxable items —
+  treat as non-taxable (gst_rate 0) and keep the label.
+- Multiple bills in one image: merge all line items into one invoice; note it.
+- Quantities like "2 doz", "1/2 kg", "250 gm", "1.5 ltr": convert sensibly.
+- Foreign or regional scripts, slang, abbreviations, or shop-specific codes:
+  interpret as best you can; keep unknown tokens as the description.
+- Tax already shown on the bill (CGST/SGST/IGST lines): use those exact figures
+  instead of recomputing, and set tax_breakdown/grand_total accordingly.
+- Photos of screens, printed PDFs, screenshots, or smudged thermal paper: read them.
+- If totals don't add up, keep the bill's stated grand_total as the source of
+  truth and note the discrepancy. The invoice must always balance internally.
+
 ========================  OUTPUT (STRICT)  ========================
 Return ONLY one valid JSON object, no markdown, no commentary, with EXACTLY these
 keys:
 seller_name, seller_gstin, buyer_name, buyer_gstin, transaction_type, items,
-subtotal, tax_rate, tax_breakdown, grand_total, notes
+subtotal, tax_rate, tax_breakdown, grand_total, notes, gst_applicable
 - items: list of objects with keys description, hsn_code, quantity, unit,
-  unit_price, total, gst_rate.
+  unit_price, total, gst_rate, taxable.
+- gst_applicable: boolean — false only if a non-GST bill was requested, else true.
+- taxable: boolean per item — false for person/personal-payment lines, else true.
 - Use null (not "") for any missing seller_gstin, buyer_gstin, buyer_name, notes.
 - Put any assumptions, low-confidence reads, or skipped/illegible content in
   "notes" so the user can verify (e.g. "Shop name unclear; 1 item amount estimated").
@@ -164,8 +250,25 @@ def parse_invoice_text(raw_text: str, metadata: dict[str, Any] | None = None) ->
         logger.warning("Gemini parse failed; using regex fallback: %s", exc)
         parsed_data = validate_invoice_data(parse_with_regex(cleaned_text))
 
+    # Honour an explicit non-GST request even on the regex fallback path.
+    if requests_non_gst_bill(cleaned_text):
+        parsed_data["gst_applicable"] = False
+
     logger.info("Parsed invoice with %s item(s)", len(parsed_data["items"]))
     return parsed_data
+
+
+NON_GST_REQUEST_PATTERN = re.compile(
+    r"\b(?:no\s*gst|without\s*gst|non[\s-]*gst|gst\s*free|"
+    r"bina\s*gst|gst\s*nahi|kacc?ha\s*bill|cash\s*bill)\b",
+    re.I,
+)
+
+
+def requests_non_gst_bill(text: str) -> bool:
+    """Return True when the text asks for a bill without GST."""
+
+    return bool(NON_GST_REQUEST_PATTERN.search(str(text or "")))
 
 
 def parse_with_gemini(raw_text: str) -> dict[str, Any]:
@@ -244,6 +347,12 @@ def parse_invoice_from_image(
         raise GeminiParseError("Gemini Vision returned an empty response.")
 
     parsed = validate_invoice_data(load_json_object(response_text))
+
+    # Honour a non-GST request written in the message caption sent with the image.
+    caption = (metadata or {}).get("body", "")
+    if requests_non_gst_bill(caption):
+        parsed["gst_applicable"] = False
+
     logger.info(
         "Gemini Vision parsed invoice with %s item(s) from image",
         len(parsed["items"]),
@@ -480,6 +589,9 @@ def validate_invoice_data(data: dict[str, Any]) -> dict[str, Any]:
         "tax_breakdown": tax_breakdown,
         "grand_total": round_money(grand_total),
         "notes": normalize_optional_string(data.get("notes")),
+        # Bill-level switch: True for a normal GST bill, False for an explicit
+        # non-GST bill. calculate_gst applies it. Defaults to True.
+        "gst_applicable": data.get("gst_applicable", True),
     }
 
 
@@ -522,6 +634,8 @@ def normalize_item(item: dict[str, Any]) -> dict[str, Any]:
         "unit_price": round_money(unit_price),
         "total": round_money(total),
         "gst_rate": gst_rate,
+        # Carry the model's taxable flag forward; calculate_gst is authoritative.
+        "taxable": item.get("taxable", True),
     }
 
 
@@ -615,6 +729,36 @@ def round_quantity(value: float) -> float:
 def clean_input_text(raw_text: str) -> str:
     """Normalize raw OCR or transcript text before parsing."""
 
-    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in str(raw_text).splitlines()]
+    expanded = expand_indian_shorthand(str(raw_text))
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in expanded.splitlines()]
     useful_lines = [line for line in lines if line]
     return "\n".join(useful_lines).strip()
+
+
+def expand_indian_shorthand(text: str) -> str:
+    """Expand Indian numeric shorthand into full numbers in raw text.
+
+    1k -> 1000, 1.5k -> 1500, 1L / 2 lakh -> 100000 / 200000, 1cr -> 10000000.
+    Uppercase ``L`` and ``k``/``K`` are matched directly; the word forms
+    (lakh/lakhs/lac/cr/crore) are matched case-insensitively. Lowercase ``l`` is
+    left alone so volume units like "5l oil" are not mistaken for lakhs.
+    """
+
+    multipliers = {
+        "k": 1_000, "l": 100_000, "lakh": 100_000, "lakhs": 100_000,
+        "lac": 100_000, "cr": 10_000_000, "crore": 10_000_000,
+    }
+
+    def replace(match: re.Match[str]) -> str:
+        number = float(match.group(1))
+        unit = match.group(2)
+        value = number * multipliers[unit.lower()]
+        return str(int(value) if value == int(value) else value)
+
+    # Letter suffixes: k/K (thousand) and uppercase L (lakh) only.
+    text = re.sub(r"(\d+(?:\.\d+)?)\s*([kK]|L)\b", replace, text)
+    # Word suffixes: lakh/lakhs/lac/cr/crore, any case.
+    text = re.sub(
+        r"(\d+(?:\.\d+)?)\s*(lakhs?|lac|crore|cr)\b", replace, text, flags=re.I
+    )
+    return text

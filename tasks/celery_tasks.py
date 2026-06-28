@@ -62,14 +62,33 @@ def run_invoice_pipeline(media_path: str, metadata: dict[str, Any]) -> dict[str,
     media_kind = metadata.get("media_kind", "unknown")
     message_sid = metadata.get("message_sid", "unknown")
 
+    # Decide what to build (salary slip vs sales invoice) and which options apply.
+    # Explicit menu choices in metadata override message auto-detection.
+    from processing.intent import detect_options
+    options = detect_options(metadata.get("body", ""))
+    doc_type = metadata.get("doc_type") or options.doc_type or "sales"
+    gst_choice = metadata.get("gst_choice")
+    if gst_choice is None:
+        gst_choice = options.gst
+    tally_choice = metadata.get("tally_choice")
+    if tally_choice is None:
+        tally_choice = options.tally
+
     logger.info(
-        "Starting invoice pipeline for %s [%s] (msg %s)",
-        from_number, media_kind, message_sid,
+        "Starting %s pipeline for %s [%s] (msg %s)",
+        doc_type, from_number, media_kind, message_sid,
     )
+
+    if doc_type == "salary":
+        return _run_salary_pipeline(media_path, media_kind, metadata)
 
     try:
         # Steps 1+2: Turn the media into structured invoice JSON.
         invoice_data = _extract_and_parse_invoice(media_path, media_kind, metadata)
+
+        # Apply explicit GST choice (non-GST bill on request).
+        if gst_choice is not None:
+            invoice_data["gst_applicable"] = gst_choice
 
         # Step 3: Enrich with user profile from Supabase
         invoice_data = _enrich_with_user_profile(invoice_data, from_number)
@@ -86,7 +105,10 @@ def run_invoice_pipeline(media_path: str, metadata: dict[str, Any]) -> dict[str,
         # Step 6: Save invoice record to Supabase
         _save_invoice_record(invoice_data)
 
-        # Step 7: Deliver PDF via WhatsApp and email
+        # Step 7: Auto-post the invoice into Tally (best-effort; honours user choice)
+        _push_to_tally(invoice_data, force=tally_choice)
+
+        # Step 8: Deliver PDF via WhatsApp and email
         _deliver_invoice(from_number, pdf_path, invoice_data)
 
         logger.info(
@@ -111,6 +133,48 @@ def run_invoice_pipeline(media_path: str, metadata: dict[str, Any]) -> dict[str,
             "from_number": from_number,
             "error": str(exc),
         }
+
+
+def _run_salary_pipeline(
+    media_path: str,
+    media_kind: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Generate and deliver a salary slip (separate document type, never GST)."""
+
+    from_number = metadata.get("from_number", "")
+    try:
+        # Parse into a payslip — image via Vision, otherwise the typed message.
+        if media_kind == "image":
+            from processing.salary_parser import parse_salary_from_image
+            payslip = parse_salary_from_image(media_path, metadata)
+        else:
+            from processing.salary_parser import parse_salary_text
+            from processing.intent import strip_flags
+            payslip = parse_salary_text(strip_flags(metadata.get("body", "")), metadata)
+
+        from invoice.salary_generator import generate_payslip_pdf
+        pdf_path = generate_payslip_pdf(payslip)
+        payslip["pdf_url"] = _upload_pdf(pdf_path, payslip.get("slip_number", ""))
+
+        # Deliver: PDF when a public URL exists, else a text summary.
+        try:
+            from delivery.whatsapp import send_payslip_pdf, send_payslip_summary_message
+
+            if payslip.get("pdf_url"):
+                send_payslip_pdf(from_number, pdf_path, payslip, payslip["pdf_url"])
+            else:
+                send_payslip_summary_message(from_number, payslip)
+        except Exception:
+            logger.warning("Payslip WhatsApp delivery failed for %s", from_number, exc_info=True)
+
+        logger.info("Salary pipeline complete for %s → %s", from_number, payslip.get("slip_number"))
+        return {"status": "success", "slip_number": payslip.get("slip_number"), "from_number": from_number}
+
+    except Exception as exc:
+        logger.exception("Salary pipeline failed for %s: %s", from_number, exc)
+        _send_error_reply(from_number, media_kind, exc)
+        return {"status": "failed", "from_number": from_number, "error": str(exc)}
 
 
 @celery_app.task(
@@ -150,6 +214,11 @@ def _extract_and_parse_invoice(
     schema. Falls back to the OCR/transcript text path (Gemini-on-text, then
     regex) when Vision is unavailable or fails.
     """
+
+    if media_kind == "text":
+        # The customer typed their items directly; parse the message body.
+        from processing.intent import strip_flags
+        return _parse_invoice(strip_flags(metadata.get("body", "")), metadata)
 
     if media_kind == "image":
         try:
@@ -267,6 +336,29 @@ def _save_invoice_record(invoice_data: dict[str, Any]) -> None:
         save_invoice_record(invoice_data)
     except Exception:
         logger.warning("Could not save invoice record to Supabase", exc_info=True)
+
+
+def _push_to_tally(invoice_data: dict[str, Any], force: bool | None = None) -> None:
+    """Auto-post the invoice into Tally as a Sales Voucher (best-effort).
+
+    ``force`` reflects the user's explicit choice: True = push, False = skip,
+    None = fall back to the global TALLY_ENABLED setting.
+    """
+
+    try:
+        from integrations.tally import is_tally_enabled, push_invoice_to_tally
+
+        if force is False:
+            return
+        if not force and not is_tally_enabled():
+            return
+        result = push_invoice_to_tally(invoice_data)
+        if result.get("ok"):
+            logger.info("Posted invoice %s to Tally", invoice_data.get("invoice_number"))
+        else:
+            logger.warning("Tally post not confirmed: %s", result.get("detail"))
+    except Exception:
+        logger.warning("Could not post invoice to Tally", exc_info=True)
 
 
 def _deliver_invoice(
